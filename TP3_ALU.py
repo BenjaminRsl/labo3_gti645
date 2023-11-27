@@ -4,6 +4,7 @@ import numpy as np
 from scipy.linalg import blas
 from scipy.linalg import lapack
 import math
+from scipy.linalg import lu
 
 
 
@@ -19,7 +20,7 @@ def matrice_init(n):
     Code de vérification de la décomposition LU    
 """
 def verification(L, U, A):
-    result = L * U - A
+    result = np.dot(L, U) - A
 
     if np.all(result < 1e-4):
         print("Correct ;)")
@@ -74,7 +75,7 @@ def parallele(A, i,comm):
     print(U_i)
 
     L_0 = np.zero()
-    comm.Reduce(L_0, L_i, op=MPI.CONCATENATE)
+    comm.Allreduce(L_0, L_i, op=MPI.CONCATENATE)
 
     maj(rank,L_0,A,i)
 
@@ -141,11 +142,6 @@ L = np.array(L,dtype=np.float64)
 U = np.array(U,dtype=np.float64)
 A = np.array(A,dtype=np.float64)
 
-print(A,L,U)
-
-verification(L, U, A)
-
-print(A - L*U)
 
 
 
@@ -153,13 +149,13 @@ lu, ipiv, info = lapack.dgetrf(A, overwrite_a=True)
 
 
 
+
 L = np.tril(lu, k=-1) + np.eye(A.shape[0], A.shape[1], dtype=lu.dtype)
 U = np.triu(lu)
 
+print(lu,U,L)
 
-print(L)
-
-print(U)
+verification(L, U, A)
 
 #print(lu, ipiv, info)
 
