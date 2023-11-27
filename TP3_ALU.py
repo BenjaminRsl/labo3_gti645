@@ -47,17 +47,13 @@ def exemple():
 
 
 
-def test(A, i):
+def parallele(A, i,comm):
 
-    #initialisation variable de communication
-    comm = MPI.COMM_WORLD
-    size = comm.Get_size()
     rank = comm.Get_rank()
 
     P = A[:,i:i+1]
 
     A_i= P[rank:rank+1,:]
-    
     
     iteration = math.ceil(math.log2(A.shape[0]))
     
@@ -74,11 +70,12 @@ def test(A, i):
 
     L_i = blas.dtrsm(1.0,A_i,U_i0)
 
-    #all reduce de concatenation
+    print(L_i)
+    print(U_i)
+
     L_0 = np.zero()
     comm.Reduce(L_0, L_i, op=MPI.CONCATENATE)
 
-    # i 
     maj(rank,L_0,A,i)
 
 
@@ -124,7 +121,49 @@ def maj(rank,L_i,A,i):
 
 
 
-# Exemple d'utilisation
-if __name__ == '__main__':
-    comm = MPI.COMM_WORLD
 
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
+
+taille = 4
+saut = 2 
+
+nb_travail= (taille // saut) // size # nombre de travail par processus
+reste = (taille // saut) % size # reste de la division euclidienne
+
+#A = matrice_init(taille)
+A = [[1, 2, 3, 4], [8, 6, 7, 5], [5, 5 , 6, 6], [9, 4, 1, 7]]
+L  = [[1,0,0,0],[8,1,0,0],[5,0.5,1,0],[9,1.4,4.4,1]]
+U = [[1,2,3,4],[0,-10,-17,-27],[0,0,-0.5,-0.5],[0,0,0,11]]
+
+L = np.array(L,dtype=np.float64)
+U = np.array(U,dtype=np.float64)
+A = np.array(A,dtype=np.float64)
+
+print(A,L,U)
+
+verification(L, U, A)
+
+print(A - L*U)
+
+
+
+lu, ipiv, info = lapack.dgetrf(A, overwrite_a=True)
+
+
+
+L = np.tril(lu, k=-1) + np.eye(A.shape[0], A.shape[1], dtype=lu.dtype)
+U = np.triu(lu)
+
+
+print(L)
+
+print(U)
+
+#print(lu, ipiv, info)
+
+'''
+for i in range(0, taille, saut):
+    parallele(A, i,comm)
+'''
