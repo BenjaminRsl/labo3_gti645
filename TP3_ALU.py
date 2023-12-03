@@ -90,11 +90,11 @@ def parallele(saut, A, i,taille,modulo):
             print(f"[{rank}] U_i : ", U_i)
 
             
-
+            
             L_0 = np.zeros(A.shape[0])
 
             comm.Allgather(L_0, L_i)
-
+            # NE RECUPERE QUE LES LIGNES QUI NOUS INTERESSENT !!??
             print("L_0 : ", L_0)
 
 
@@ -108,10 +108,6 @@ def parallele(saut, A, i,taille,modulo):
 
             return U_i,L_i
  
-def create_vector_type(n):
-    # Créer un type MPI pour un vecteur de taille n
-    return MPI.FLOAT.Create_contig(n).Commit()
-
 
 def pannel(rank, A_i, i):
 
@@ -161,6 +157,52 @@ def maj(rank,L_i,A,i):
 
 
 
+def sequentiel():
+
+    print(A[:2,:2])
+    L1, U1 = lu(A[:2,:2],permute_l=True)
+
+    print(A[2:4,:2])
+    L2, U2 = lu(A[2:4,:2],permute_l=True)
+
+    V1 = np.concatenate((U1,U2),axis=0)
+
+
+
+    L3 , U3 = lu(V1,permute_l=True)
+
+
+    U3_inv = np.linalg.inv(U3)
+
+
+    L4 = np.dot(A[:2,:2],U3_inv)
+    L5 = np.dot(A[2:4,:2],U3_inv)
+
+    L_1 = np.concatenate((L4,L5),axis=0)
+
+    print("L_1 :", L_1)
+
+    ##
+
+    T1 = np.linalg.inv(L4)
+
+    print(T1)
+
+    U12 = T1 * A[:2,2:4]
+    A[2:4, 2:4] = A[2:4,2:4] - L5 * U2
+
+
+    L_2, U_2 = lu(A[2:4,2:4],permute_l=True)
+
+    Z = np.zeros( 2 )
+
+    L = [L_1, [Z, L_2]]
+    U = [[U3, Z], [U12,U_2]]
+
+    print("L : \n", L)
+
+    print("U : \n", U)
+
 
 
 comm = MPI.COMM_WORLD
@@ -191,53 +233,11 @@ U = np.array(U,dtype=np.float64)
 A = np.array(A,dtype=np.float64)
 
 
-print(A[:2,:2])
-L1, U1 = lu(A[:2,:2],permute_l=True)
-
-print(A[2:4,:2])
-L2, U2 = lu(A[2:4,:2],permute_l=True)
-
-V1 = np.concatenate((U1,U2),axis=0)
+# TEST Séquentiel MAIS MARCHE PAS ....
+sequentiel()
 
 
-
-L3 , U3 = lu(V1,permute_l=True)
-
-
-U3_inv = np.linalg.inv(U3)
-
-
-L4 = np.dot(A[:2,:2],U3_inv)
-L5 = np.dot(A[2:4,:2],U3_inv)
-
-L_1 = np.concatenate((L4,L5),axis=0)
-
-print("L_1 :", L_1)
-
-##
-
-T1 = np.linalg.inv(L4)
-
-print(T1)
-
-U12 = T1 * A[:2,2:4]
-A[2:4, 2:4] = A[2:4,2:4] - L5 * U2
-
-
-L_2, U_2 = lu(A[2:4,2:4],permute_l=True)
-
-Z = np.zeros( 2 )
-
-L = [L_1, [Z, L_2]]
-U = [[U3, Z], [U12,U_2]]
-
-print("L : \n", L)
-
-print("U : \n", U)
-
-
-
-'''
+#  PARALLELE
 comm.Barrier()
 for i in range(0, taille, saut):
     parallele(saut, A, i,nb_travail,modulo)
@@ -246,4 +246,3 @@ print(f"[{rank}] Fin", flush=True)
 
 
 
-'''
