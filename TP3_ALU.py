@@ -48,59 +48,98 @@ def exemple():
 
 
 
-def parallele(A, i,comm):
+def parallele(saut, A, i,taille,modulo):
 
-    rank = comm.Get_rank()
+    rank = comm.Get_rank()   
 
-    P = A[:,i:i+1]
+    for j in range(0, A.shape[0], saut):
 
-    A_i= P[rank:rank+1,:]
-    
-    iteration = math.ceil(math.log2(A.shape[0]))
-    
-    for i in range(iteration):
-        U_i = pannel(rank, A_i,i)
+        print(f"[{rank}]", j, modulo, j % modulo,rank * saut , flush=True)
 
+        if(j % modulo == rank * saut ):
+            print( f"[{rank}]",j,modulo, flush=True)
 
-    if(rank == 0):
-        comm.Bcast(U_i,0)
-    else:
-        U_i0 = np.zeros()
-        comm.Bcast(U_i0,0)
+            P = A[:,i:(i+1)+1]
 
+            A_i= P[j:(j+1)+1,:]
+            
 
-    L_i = blas.dtrsm(1.0,A_i,U_i0)
+            iteration = math.ceil(math.log2(A.shape[0] // saut ))
+            
+            U_i = np.zeros(A.shape[0])
 
-    print(L_i)
-    print(U_i)
-
-    L_0 = np.zero()
-    comm.Allreduce(L_0, L_i, op=MPI.CONCATENATE)
-
-    maj(rank,L_0,A,i)
+            print(f"[{rank}] début de la boucle de {iteration} itérations", flush=True)
+            for k in range(iteration):
+                U_i = pannel(rank, A_i,k)
 
 
+
+            U_i = comm.bcast(U_i,root=0)
+
+            #U_i = np.array(U_i,dtype=np.float64)
+            print(f"[{rank}] U_i : ", U_i, flush=True)
+            
+
+
+
+            L_i = blas.dtrsm(1.0,A_i,U_i)
+
+            print("\n\n")
+            print(f"[{rank}] L_i: ", L_i)
+            print("\n\n")
+            print(f"[{rank}] U_i : ", U_i)
+
+            
+
+            L_0 = np.zeros(A.shape[0])
+
+            comm.Allgather(L_0, L_i)
+
+            print("L_0 : ", L_0)
+
+
+            exit()
+
+            L_0 = L_0.reshape(L_i.shape)
+            print("L_0 : ", L_0)
+            comm.Barrier()
+
+            maj(j,L_0,A,i)
+
+            return U_i,L_i
+ 
+def create_vector_type(n):
+    # Créer un type MPI pour un vecteur de taille n
+    return MPI.FLOAT.Create_contig(n).Commit()
 
 
 def pannel(rank, A_i, i):
 
-    L_i, U_i = lapack.dgetrf(A_i)
+    L_i, U_i = lu(A_i,permute_l=True)
 
+    print(f"[{rank}] L_i : ", L_i, flush=True)
+    print(f"[{rank}] U_i : ", U_i, flush=True)
+
+
+    print(f"[{rank}] i : ", i, flush=True)
     #Envoie à son voison si on est impaire
     if(rank % 2**(i+1) !=0):
         #envoie
-        print(f"envoie à {rank - 2**i}")
-        comm.Send(A_i, rank - 2**i, 0)
+        print(f"[{rank}] envoie à {rank - 2**i}", flush=True)
+        comm.Send(U_i, dest=rank - 2**i, tag=0)
+        return None
  
     else:
         #reception
-        print(f"reception de {rank + 2**i}")
-        U_voisin = np.zeros()
-        comm.Recv(U_voisin, rank + 2**i, 0)
+        print(f"[{rank}] reception de {rank + 2**i}", flush=True)
+        U_voisin = np.zeros(A.shape[0])
+        comm.Recv(U_voisin,rank + 2**i, 0)
+        U_voisin = U_voisin.reshape(U_i.shape)
+        print(f"[{rank}] U_voisin : ", U_voisin, flush=True)
+        V_i = [U_i,U_voisin]
+        return V_i
     
-    V_i = [U_i,U_voisin]
-    
-    return V_i
+
 
 
 
@@ -110,15 +149,16 @@ def maj(rank,L_i,A,i):
 
     if(rank==0):
         T_0 = np.linalg.inv(L_i)
-        comm.Bcast(L_i,0)
+        comm.Bcast(T_0,0)
     else :
-        T_i = np.zeros()
+        T_i = np.zeros(A.shape[0])
         comm.Bcast(T_i,0)
         A_i = A[i:i+1,rank:rank+1]
         U_i = T_i * A_i
 
         for j in range(2, nb_ligne, 2):
             A[j:j+1,rank:rank+1] = A[j:j+1,rank:rank+1] - L_i * U_i
+
 
 
 
@@ -130,7 +170,15 @@ size = comm.Get_size()
 taille = 4
 saut = 2 
 
-nb_travail= (taille // saut) // size # nombre de travail par processus
+
+nb_travail= math.ceil((taille // saut) / size) # nombre de travail par processus
+modulo = size * saut # période
+
+
+
+
+print(f"[{rank}]",taille, saut, size, flush=True)
+print(f"[{rank}] travail :  ",nb_travail, flush=True)
 reste = (taille // saut) % size # reste de la division euclidienne
 
 #A = matrice_init(taille)
@@ -143,23 +191,59 @@ U = np.array(U,dtype=np.float64)
 A = np.array(A,dtype=np.float64)
 
 
+print(A[:2,:2])
+L1, U1 = lu(A[:2,:2],permute_l=True)
+
+print(A[2:4,:2])
+L2, U2 = lu(A[2:4,:2],permute_l=True)
+
+V1 = np.concatenate((U1,U2),axis=0)
 
 
-lu, ipiv, info = lapack.dgetrf(A, overwrite_a=True)
+
+L3 , U3 = lu(V1,permute_l=True)
 
 
+U3_inv = np.linalg.inv(U3)
 
 
-L = np.tril(lu, k=-1) + np.eye(A.shape[0], A.shape[1], dtype=lu.dtype)
-U = np.triu(lu)
+L4 = np.dot(A[:2,:2],U3_inv)
+L5 = np.dot(A[2:4,:2],U3_inv)
 
-print(lu,U,L)
+L_1 = np.concatenate((L4,L5),axis=0)
 
-verification(L, U, A)
+print("L_1 :", L_1)
 
-#print(lu, ipiv, info)
+##
+
+T1 = np.linalg.inv(L4)
+
+print(T1)
+
+U12 = T1 * A[:2,2:4]
+A[2:4, 2:4] = A[2:4,2:4] - L5 * U2
+
+
+L_2, U_2 = lu(A[2:4,2:4],permute_l=True)
+
+Z = np.zeros( 2 )
+
+L = [L_1, [Z, L_2]]
+U = [[U3, Z], [U12,U_2]]
+
+print("L : \n", L)
+
+print("U : \n", U)
+
+
 
 '''
+comm.Barrier()
 for i in range(0, taille, saut):
-    parallele(A, i,comm)
+    parallele(saut, A, i,nb_travail,modulo)
+
+print(f"[{rank}] Fin", flush=True)
+
+
+
 '''
