@@ -50,8 +50,10 @@ def exemple():
 
 def parallele(saut, A, i,taille,modulo):
 
-    rank = comm.Get_rank()   
+    rank = comm.Get_rank() 
+    size = comm.Get_size()  
 
+    #TODO enlever on gère sous-matrice
     for j in range(0, A.shape[0], saut):
 
         print(f"[{rank}]", j, modulo, j % modulo,rank * saut , flush=True)
@@ -73,40 +75,52 @@ def parallele(saut, A, i,taille,modulo):
                 U_i = pannel(rank, A_i,k)
 
 
-
+            print(f"[{rank}] U_i : ", U_i, flush=True)
             U_i = comm.bcast(U_i,root=0)
 
-            #U_i = np.array(U_i,dtype=np.float64)
+  
             print(f"[{rank}] U_i : ", U_i, flush=True)
             
 
+        
+            U_i_inv = np.linalg.inv(U_i)
 
+            L_i = np.dot(A_i,U_i_inv)
 
-            L_i = blas.dtrsm(1.0,A_i,U_i)
 
             print("\n\n")
             print(f"[{rank}] L_i: ", L_i)
             print("\n\n")
             print(f"[{rank}] U_i : ", U_i)
-
+            print("\n\n")
+            print(f"[{rank}] A_i : ", A_i)
             
-            
-            L_0 = np.zeros(A.shape[0])
-
-            comm.Allgather(L_0, L_i)
-            # NE RECUPERE QUE LES LIGNES QUI NOUS INTERESSENT !!??
-            print("L_0 : ", L_0)
+            L_ = np.zeros((L_i.shape[0]*size*saut,L_i.shape[1]))
+            L_0 = np.zeros((L_i.shape[0],L_i.shape[1]))
 
 
-            exit()
+            comm.Allgather([L_i,MPI.DOUBLE], [L_,MPI.DOUBLE])
+            L_0 = comm.bcast(L_i,root=0)
 
-            L_0 = L_0.reshape(L_i.shape)
+
             print("L_0 : ", L_0)
             comm.Barrier()
+            
+            # Mise a jour des autres colonnes de sa ligne
+            maj(rank,j,L_0,A,i)
+            exit()
 
-            maj(j,L_0,A,i)
+    # On récupère le numéro du bloc qu'on traite
+    bloc = i // saut
 
-            return U_i,L_i
+    s = nb_travail - bloc
+
+    Z = np.zeros( (saut,saut) )
+
+    U_i = [U_i, Z*bloc]
+    L_i = [s * Z, L_i]
+
+    return U_i,L_i
  
 
 def pannel(rank, A_i, i):
@@ -139,21 +153,25 @@ def pannel(rank, A_i, i):
 
 
 
-def maj(rank,L_i,A,i):
+def maj(rank,j,L_0,A,i):
 
     nb_ligne = A.shape[0]
 
-    if(rank==0):
-        T_0 = np.linalg.inv(L_i)
+    if(j==0):
+        T_0 = np.linalg.inv(L_0)
         comm.Bcast(T_0,0)
     else :
-        T_i = np.zeros(A.shape[0])
+        T_i = np.zeros((L_0.shape[0],L_0.shape[1]))
         comm.Bcast(T_i,0)
-        A_i = A[i:i+1,rank:rank+1]
+        A_i = A[i:(i+1)+1,rank:(rank+1)+1]
         U_i = T_i * A_i
 
-        for j in range(2, nb_ligne, 2):
-            A[j:j+1,rank:rank+1] = A[j:j+1,rank:rank+1] - L_i * U_i
+        print(f"[{rank}] T_i : ", T_i , flush=True)
+
+        for j in range(2, nb_ligne, saut):
+            print(f"[{rank}] j : {j}, j+2 : {j +2 } \n L_0 : \n {L_0} \n U_i : \n {U_i} \n np.dot(L_0, U_i) : \n {np.dot(L_0, U_i)}" , flush=True)
+
+            A[j:(j+1)+1,rank:(rank+1)+1] = A[j:(j+1)+1,rank:(rank+1)+1] - np.dot(L_0, U_i)
 
 
 
@@ -205,6 +223,8 @@ def sequentiel():
 
 
 
+# MAIN
+
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 size = comm.Get_size()
@@ -212,8 +232,9 @@ size = comm.Get_size()
 taille = 4
 saut = 2 
 
+taille_sous_matrice = (taille // size) 
 
-nb_travail= math.ceil((taille // saut) / size) # nombre de travail par processus
+nb_travail= taille // saut
 modulo = size * saut # période
 
 
@@ -225,6 +246,7 @@ reste = (taille // saut) % size # reste de la division euclidienne
 
 #A = matrice_init(taille)
 A = [[1, 2, 3, 4], [8, 6, 7, 5], [5, 5 , 6, 6], [9, 4, 1, 7]]
+
 L  = [[1,0,0,0],[8,1,0,0],[5,0.5,1,0],[9,1.4,4.4,1]]
 U = [[1,2,3,4],[0,-10,-17,-27],[0,0,-0.5,-0.5],[0,0,0,11]]
 
@@ -234,13 +256,14 @@ A = np.array(A,dtype=np.float64)
 
 
 # TEST Séquentiel MAIS MARCHE PAS ....
-sequentiel()
+#sequentiel()
 
 
-#  PARALLELE
+#  PARALLELE récurisivité des colonnes
 comm.Barrier()
 for i in range(0, taille, saut):
     parallele(saut, A, i,nb_travail,modulo)
+    comm.Barrier()
 
 print(f"[{rank}] Fin", flush=True)
 
