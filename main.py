@@ -1,8 +1,6 @@
 import mpi4py.MPI
 from mpi4py import MPI
 import numpy as np
-from scipy.linalg import blas
-from scipy.linalg import lapack
 from scipy.linalg import lu
 import argparse
 from dataclasses import dataclass
@@ -62,7 +60,6 @@ def check_correct(mat_a: np.ndarray, mat_l: np.ndarray, mat_u: np.ndarray) -> bo
 
     print("Correct")
     return True
-
 
 
 def exemple():
@@ -273,57 +270,129 @@ class Info:
 def inv_rank(info: Info):
     return info.num_proc - info.rank - 1
 
+
+def find_U_panel_final(info: Info, U_panel: np.ndarray, current_iteration: int) -> (int, np.ndarray):
+    """Will only give right result on rank marked by the return value"""
+
+    U_panel_final = np.zeros((info.submat_size, info.submat_size))
+
+    rank_start = current_iteration
+    merge_mat = U_panel
+    for i in range(info.size_log2):
+        jump = 2 ** i
+        is_receiving_cell = info.merge_rank % (2 ** (i + 1)) == 0
+        is_merging_cell = info.merge_rank % jump == 0
+
+        if is_receiving_cell:
+            pair_rank = info.rank - jump
+
+            if pair_rank >= rank_start:
+                pair_mat = np.zeros((info.submat_size, info.submat_size))
+                info.comm.Recv(pair_mat, source=pair_rank, tag=i)
+
+                concatenated_mat = np.concatenate((pair_mat, merge_mat), axis=0)
+                _, merge_mat = lu(concatenated_mat, permute_l=True)
+
+        elif is_merging_cell:
+            if info.rank >= rank_start:
+                pair_rank = info.rank + jump
+                info.comm.Send(merge_mat.ravel(), dest=pair_rank, tag=i)
+
+        is_last_merge = i + 1 == info.size_log2
+        if is_last_merge and info.rank == info.num_proc - 1:
+            _, U_panel_final = lu(merge_mat, permute_l=True)
+
+    return info.num_proc - 1, U_panel_final
+
+
+def col_to_row(info: Info, col_mat: np.ndarray) -> np.ndarray:
+    row_mat = np.zeros((col_mat.shape[1], col_mat.shape[0]))
+    num_submatrixes = col_mat.shape[0] // info.submat_size
+    for i in range(num_submatrixes):
+        row_mat[0: info.submat_size, info.submat_size * i: info.submat_size * i + info.submat_size] = col_mat[info.submat_size * i: info.submat_size * i + info.submat_size, 0: info.submat_size]
+    return row_mat
+
 def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
     """Will only give right result on rank 0"""
+    A = np.copy(info.A)
+    L = np.zeros((info.mat_size, info.mat_size))
+    U = np.zeros((info.mat_size, info.mat_size))
 
-    panel = info.A[:,0:info.submat_size]
     for current_iteration in range(info.num_iterations - 1):
         if info.rank == 0:
             print("==== Current iteration: %d ====" % current_iteration)
 
+        panel = A[:, info.submat_size * current_iteration:info.submat_size * current_iteration + info.submat_size]
+
         A_panel = np.zeros((info.submat_size, info.submat_size))
         info.comm.Scatter(panel.ravel(), A_panel, root=0)
 
-        L_panel, U_panel = lu(A_panel, permute_l=True)
+        _, U_panel = lu(A_panel, permute_l=True)
 
-        rank_start = current_iteration
-        merge_mat_size = 1
-        merge_mat = A_panel
-        for i in range(info.size_log2):
-            jump = 2 ** i
-            is_receiving_cell = info.merge_rank % (2 ** (i+1)) == 0
-            is_merging_cell = info.merge_rank % jump == 0
+        U_panel_final_root, U_panel_final = find_U_panel_final(info, U_panel, current_iteration)
+        info.comm.Bcast(U_panel_final, root=U_panel_final_root)
+        if info.rank == 0:
+            print("Iteration " + str(current_iteration) + "\n U_panel_final: " + str(U_panel_final))
 
-            if is_receiving_cell:
-                pair_rank = info.rank - jump
+        # Compute the column for the L matrix corresponding to this iteration
+        L_column_element = np.zeros((info.submat_size, info.submat_size))
+        if (info.rank >= current_iteration):
+            L_column_element = np.dot(A_panel, np.linalg.inv(U_panel_final))
 
-                if pair_rank >= rank_start:
-                    pair_mat_size = info.comm.recv(source=pair_rank, tag=i)
-                    pair_mat = np.zeros((info.submat_size * pair_mat_size, info.submat_size))
+        L_column = np.zeros((info.mat_size, info.submat_size))
+        info.comm.Allgather(L_column_element, L_column)
+        if info.rank == 0:
+            L[0:info.mat_size, current_iteration * info.submat_size:current_iteration * info.submat_size + info.submat_size] = L_column
+            print("Iteration " + str(current_iteration) + "\n L_column: " + str(L_column))
 
-                    info.comm.Recv(pair_mat, source=pair_rank, tag=i)
-                    merge_mat_size = merge_mat_size + pair_mat_size
+        # Compute the row for the U matrix corresponding to this iteration
+        T = np.zeros((info.submat_size, info.submat_size))
+        if (info.rank == current_iteration):
+            T = np.linalg.inv(L_column_element)
 
-                    merge_mat = np.concatenate((pair_mat, merge_mat), axis=0)
+        info.comm.Bcast(T, root=current_iteration)
+        if info.rank == 0:
+            print("Iteration " + str(current_iteration) + "\n T: " + str(T))
 
-            elif is_merging_cell:
-                if info.rank >= rank_start:
-                    pair_rank = info.rank + jump
-                    info.comm.send(merge_mat_size, dest=pair_rank, tag=i)
-                    info.comm.Send(merge_mat.ravel(), dest=pair_rank, tag=i)
+        U_row_element = np.zeros((info.submat_size, info.submat_size))
+        if info.rank == current_iteration:
+            U_row_element = U_panel_final
+        elif info.rank > current_iteration:
+            A_row_element = A[info.submat_size * current_iteration:info.submat_size * current_iteration + info.submat_size, info.submat_size * info.rank:info.submat_size * info.rank + info.submat_size]
+            U_row_element = np.dot(T, A_row_element)
 
-            is_last_merge = i + 1 == info.size_log2
-            if is_last_merge and info.rank == info.num_proc - 1:
-                print("Iteration: " + str(current_iteration) + "Rank: " + str(info.rank) + "\nMerge mat: " + str(merge_mat))
+        U_row_col = np.zeros((info.mat_size, info.submat_size))
+        info.comm.Allgather(U_row_element, U_row_col)
+        U_row = col_to_row(info, U_row_col)
 
-        info.comm.Barrier()
+        if info.rank == 0:
+            U[current_iteration * info.submat_size:current_iteration * info.submat_size + info.submat_size, 0:info.mat_size] = U_row
+            print("Iteration " + str(current_iteration) + "\n U_row: " + str(U_row))
 
-    if info.rank == 0:
-        print("")
+        # Update the A matrix for this iteration
+        update_row_A = A[:, info.submat_size * info.rank:info.submat_size * info.rank + info.submat_size]
+        update_U = U_row_col[info.rank * info.submat_size: info.rank * info.submat_size + info.submat_size, 0: info.submat_size]
 
-    L = np.zeros((info.mat_size, info.mat_size))
-    U = np.zeros((info.mat_size, info.mat_size))
+        if (info.rank > current_iteration):
+            for i in range(current_iteration + 1, info.num_iterations):
+                update_A = update_row_A[i * info.submat_size: i * info.submat_size + info.submat_size, 0: info.submat_size]
+                update_L =L_column[i * info.submat_size: i * info.submat_size + info.submat_size, 0: info.submat_size]
+
+                update_row_A[i * info.submat_size: i * info.submat_size + info.submat_size, 0: info.submat_size] = update_A - np.dot(update_L, update_U)
+
+        update_A_final = np.zeros((info.mat_size * info.num_proc, info.submat_size))
+        info.comm.Allgather(update_row_A.ravel(), update_A_final)
+        for i in range(info.num_proc):
+            A[:, info.submat_size * i:info.submat_size * i + info.submat_size] = update_A_final[info.mat_size * i: info.mat_size * i + info.mat_size, :]
+
+    if (info.rank == 0):
+        last_A = A[info.mat_size - info.submat_size:info.mat_size, info.mat_size - info.submat_size:info.mat_size]
+        last_L, last_U = lu(last_A, permute_l=True)
+        L[info.mat_size - info.submat_size:info.mat_size, info.mat_size - info.submat_size:info.mat_size] = last_L
+        U[info.mat_size - info.submat_size:info.mat_size, info.mat_size - info.submat_size:info.mat_size] = last_U
+
     return L, U
+
 
 def main():
     comm = MPI.COMM_WORLD
@@ -343,17 +412,6 @@ def main():
 
     Z = np.zeros((submat_size, submat_size))
     A = init_random_mat(mat_size, mat_size)
-
-    # TODO Remove
-    A_data = [[0.7063956, 0.0958044, 0.4083480, 0.0296047, 0.3537505, 0.3891269, 0.3340674, 0.7760742],
-            [0.2530419, 0.3183366, 0.6654437, 0.2700742, 0.3496487, 0.1803152,   0.8940230, 0.9117640],
-            [0.4949135, 0.0521427, 0.3901374, 0.6078649, 0.5272401, 0.8876878, 0.0169656, 0.5881695],
-            [0.2591390, 0.7560347, 0.7787556, 0.6083338, 0.2959305, 0.1282858, 0.4537364, 0.9144353],
-            [0.1366075, 0.0067270, 0.5809726, 0.3003515, 0.6920679, 0.7308718, 0.3723367, 0.0115566],
-            [0.7243697, 0.9559875, 0.4004689, 0.5467245, 0.9444092, 0.1769764,  0.1137369, 0.7531579],
-            [0.3082837, 0.6498422, 0.9510023, 0.6785915, 0.6560145, 0.1313168,   0.2105410, 0.9547708],
-            [0.7357185, 0.1029297, 0.6172203, 0.2037524, 0.0872543, 0.3861805,   0.9129948, 0.1102923]]
-    A = np.array(A_data)
 
     comm.Bcast(A, root=0)
 
