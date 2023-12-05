@@ -1,10 +1,19 @@
+import mpi4py.MPI
 from mpi4py import MPI
 import numpy as np
 from scipy.linalg import blas
 from scipy.linalg import lapack
 from scipy.linalg import lu
+import argparse
+from dataclasses import dataclass
+import time
+import math
 
-MAT_SIZE = 8
+parser = argparse.ArgumentParser()
+parser.add_argument("-s", "--mat_size", default=256, type=int,
+                    help="Size of the matrix to compute LU on")
+args = vars(parser.parse_args())
+
 CHECK_EPSILON = 1e-4
 
 
@@ -70,7 +79,7 @@ def exemple():
     A = np.array(A_data, dtype=np.double)
 
     #######################
-    #        Panel        #
+    #        Panel1       #
     #######################
 
     # On prend le premier panel
@@ -119,7 +128,7 @@ def exemple():
     L_1 = np.concatenate((L11, L21, L31, L41), axis=0)
 
     #######################
-    #        Update       #
+    #        Update1      #
     #######################
 
     # Partie de droite
@@ -158,7 +167,7 @@ def exemple():
     A44_ = A44 - np.dot(L41, U_14)
 
     #######################
-    #        Panel        #
+    #        Panel2       #
     #######################
 
     # On recommence sur la trailing matrix (ici 3x3)
@@ -181,7 +190,7 @@ def exemple():
     L_2 = np.concatenate((L22, L32, L42), axis=0)
 
     #######################
-    #        Update       #
+    #        Update2      #
     #######################
 
     # Partie de droite
@@ -199,7 +208,7 @@ def exemple():
     A44__ = A44_ - np.dot(L42, U_24)
 
     #######################
-    #        Panel        #
+    #        Panel3       #
     #######################
 
     # On recommence sur la trailing matrix (ici 2x2)
@@ -216,7 +225,7 @@ def exemple():
     L_3 = np.concatenate((L33, L43), axis=0)
 
     #######################
-    #        Update       #
+    #        Update3      #
     #######################
     # Partie de droite
     # On divise le inv(L) dans la ligne (il n'en reste qu'un)
@@ -247,8 +256,118 @@ def exemple():
 
     check_correct(A, L, U)
 
+@dataclass
+class Info:
+    comm: mpi4py.MPI.Intracomm
+    rank: int
+    merge_rank: int
+    num_proc: int
+    mat_size: int
+    submat_size: int
+    num_iterations: int
+    size_log2: int
+    A: np.ndarray
+    Z: np.ndarray
 
-#mpiexec -n [nombreproc] python main
+
+def inv_rank(info: Info):
+    return info.num_proc - info.rank - 1
+
+def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
+    """Will only give right result on rank 0"""
+
+    panel = info.A[:,0:info.submat_size]
+    for current_iteration in range(info.num_iterations - 1):
+        if info.rank == 0:
+            print("==== Current iteration: %d ====" % current_iteration)
+
+        A_panel = np.zeros((info.submat_size, info.submat_size))
+        info.comm.Scatter(panel.ravel(), A_panel, root=0)
+
+        L_panel, U_panel = lu(A_panel, permute_l=True)
+
+        rank_start = current_iteration
+        merge_mat_size = 1
+        merge_mat = A_panel
+        for i in range(info.size_log2):
+            jump = 2 ** i
+            is_receiving_cell = info.merge_rank % (2 ** (i+1)) == 0
+            is_merging_cell = info.merge_rank % jump == 0
+
+            if is_receiving_cell:
+                pair_rank = info.rank - jump
+
+                if pair_rank >= rank_start:
+                    pair_mat_size = info.comm.recv(source=pair_rank, tag=i)
+                    pair_mat = np.zeros((info.submat_size * pair_mat_size, info.submat_size))
+
+                    info.comm.Recv(pair_mat, source=pair_rank, tag=i)
+                    merge_mat_size = merge_mat_size + pair_mat_size
+
+                    merge_mat = np.concatenate((pair_mat, merge_mat), axis=0)
+
+            elif is_merging_cell:
+                if info.rank >= rank_start:
+                    pair_rank = info.rank + jump
+                    info.comm.send(merge_mat_size, dest=pair_rank, tag=i)
+                    info.comm.Send(merge_mat.ravel(), dest=pair_rank, tag=i)
+
+            is_last_merge = i + 1 == info.size_log2
+            if is_last_merge and info.rank == info.num_proc - 1:
+                print("Iteration: " + str(current_iteration) + "Rank: " + str(info.rank) + "\nMerge mat: " + str(merge_mat))
+
+        info.comm.Barrier()
+
+    if info.rank == 0:
+        print("")
+
+    L = np.zeros((info.mat_size, info.mat_size))
+    U = np.zeros((info.mat_size, info.mat_size))
+    return L, U
+
+def main():
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    num_proc = comm.Get_size()
+
+    mat_size = args["mat_size"]
+
+    if mat_size % (num_proc * 2) != 0:
+        print("The size of the matrix (%d) cannot be divided by the number of process (%d). Returning" % (mat_size, num_proc))
+        return
+
+    submat_size = mat_size // num_proc
+    num_iterations = num_proc
+    size_log2 = math.ceil(math.log2(mat_size))
+    merge_rank = num_iterations - rank - 1
+
+    Z = np.zeros((submat_size, submat_size))
+    A = init_random_mat(mat_size, mat_size)
+
+    # TODO Remove
+    A_data = [[0.7063956, 0.0958044, 0.4083480, 0.0296047, 0.3537505, 0.3891269, 0.3340674, 0.7760742],
+            [0.2530419, 0.3183366, 0.6654437, 0.2700742, 0.3496487, 0.1803152,   0.8940230, 0.9117640],
+            [0.4949135, 0.0521427, 0.3901374, 0.6078649, 0.5272401, 0.8876878, 0.0169656, 0.5881695],
+            [0.2591390, 0.7560347, 0.7787556, 0.6083338, 0.2959305, 0.1282858, 0.4537364, 0.9144353],
+            [0.1366075, 0.0067270, 0.5809726, 0.3003515, 0.6920679, 0.7308718, 0.3723367, 0.0115566],
+            [0.7243697, 0.9559875, 0.4004689, 0.5467245, 0.9444092, 0.1769764,  0.1137369, 0.7531579],
+            [0.3082837, 0.6498422, 0.9510023, 0.6785915, 0.6560145, 0.1313168,   0.2105410, 0.9547708],
+            [0.7357185, 0.1029297, 0.6172203, 0.2037524, 0.0872543, 0.3861805,   0.9129948, 0.1102923]]
+    A = np.array(A_data)
+
+    comm.Bcast(A, root=0)
+
+    info = Info(comm, rank, merge_rank, num_proc, mat_size, submat_size, num_iterations, size_log2, A, Z)
+
+    time_start = time.time()
+    L, U = resolve_lu(info)
+
+    if rank == 0:
+        time_end = time.time()
+        elapsed_time = time_end - time_start
+        if check_correct(A, L, U):
+            print("Execution time: %d" % elapsed_time)
+
+#mpiexec -n 4 python main --mat_size 256
 if __name__ == '__main__':
-    mat_truc = exemple()
-    print("Salut")
+    main()
