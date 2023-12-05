@@ -319,9 +319,6 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
     U = np.zeros((info.mat_size, info.mat_size))
 
     for current_iteration in range(info.num_iterations - 1):
-        if info.rank == 0:
-            print("==== Current iteration: %d ====" % current_iteration)
-
         panel = A[:, info.submat_size * current_iteration:info.submat_size * current_iteration + info.submat_size]
 
         A_panel = np.zeros((info.submat_size, info.submat_size))
@@ -331,8 +328,6 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
 
         U_panel_final_root, U_panel_final = find_U_panel_final(info, U_panel, current_iteration)
         info.comm.Bcast(U_panel_final, root=U_panel_final_root)
-        if info.rank == 0:
-            print("Iteration " + str(current_iteration) + "\n U_panel_final: " + str(U_panel_final))
 
         # Compute the column for the L matrix corresponding to this iteration
         L_column_element = np.zeros((info.submat_size, info.submat_size))
@@ -343,7 +338,6 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
         info.comm.Allgather(L_column_element, L_column)
         if info.rank == 0:
             L[0:info.mat_size, current_iteration * info.submat_size:current_iteration * info.submat_size + info.submat_size] = L_column
-            print("Iteration " + str(current_iteration) + "\n L_column: " + str(L_column))
 
         # Compute the row for the U matrix corresponding to this iteration
         T = np.zeros((info.submat_size, info.submat_size))
@@ -351,8 +345,6 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
             T = np.linalg.inv(L_column_element)
 
         info.comm.Bcast(T, root=current_iteration)
-        if info.rank == 0:
-            print("Iteration " + str(current_iteration) + "\n T: " + str(T))
 
         U_row_element = np.zeros((info.submat_size, info.submat_size))
         if info.rank == current_iteration:
@@ -367,7 +359,6 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
 
         if info.rank == 0:
             U[current_iteration * info.submat_size:current_iteration * info.submat_size + info.submat_size, 0:info.mat_size] = U_row
-            print("Iteration " + str(current_iteration) + "\n U_row: " + str(U_row))
 
         # Update the A matrix for this iteration
         update_row_A = A[:, info.submat_size * info.rank:info.submat_size * info.rank + info.submat_size]
@@ -424,7 +415,7 @@ def main():
         time_end = time.time()
         elapsed_time = time_end - time_start
         if check_correct(A, L, U):
-            print("Execution time: %d" % elapsed_time)
+            print("Execution time: %f" % elapsed_time)
 
 #mpiexec -n 4 python main --mat_size 256
 if __name__ == '__main__':
