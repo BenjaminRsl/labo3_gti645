@@ -323,7 +323,6 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
 
         A_panel = np.zeros((info.submat_size, info.submat_size))
         info.comm.Scatter(panel.ravel(), A_panel, root=0)
-
         _, U_panel = lu(A_panel, permute_l=True)
 
         U_panel_final_root, U_panel_final = find_U_panel_final(info, U_panel, current_iteration)
@@ -339,12 +338,18 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
         if info.rank == 0:
             L[0:info.mat_size, current_iteration * info.submat_size:current_iteration * info.submat_size + info.submat_size] = L_column
 
+        
         # Compute the row for the U matrix corresponding to this iteration
+        L_column_element_0 = L_column[info.submat_size * current_iteration:info.submat_size * current_iteration + L_column_element.shape[0], 0 : L_column_element.shape[1]]
+        T = np.linalg.inv(L_column_element_0)
+       
+        '''
         T = np.zeros((info.submat_size, info.submat_size))
         if (info.rank == current_iteration):
             T = np.linalg.inv(L_column_element)
 
         info.comm.Bcast(T, root=current_iteration)
+        '''
 
         U_row_element = np.zeros((info.submat_size, info.submat_size))
         if info.rank == current_iteration:
@@ -402,7 +407,11 @@ def main():
     merge_rank = num_iterations - rank - 1
 
     Z = np.zeros((submat_size, submat_size))
-    A = init_random_mat(mat_size, mat_size)
+    
+    if rank == 0:
+        A = init_random_mat(mat_size, mat_size)
+    else:
+        A = np.zeros((mat_size, mat_size))
 
     comm.Bcast(A, root=0)
 
@@ -416,6 +425,8 @@ def main():
         elapsed_time = time_end - time_start
         if check_correct(A, L, U):
             print("Execution time: %f" % elapsed_time)
+
+
 
 #mpiexec -n 4 python main --mat_size 256
 if __name__ == '__main__':
