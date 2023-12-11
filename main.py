@@ -340,8 +340,8 @@ def resolve_lu(info: Info) -> (np.ndarray, np.ndarray):
 
         
         # Compute the row for the U matrix corresponding to this iteration
-        L_column_element_0 = L_column[info.submat_size * current_iteration:info.submat_size * current_iteration + L_column_element.shape[0], 0 : L_column_element.shape[1]]
-        T = np.linalg.inv(L_column_element_0)
+        L_column_element_current = L_column[info.submat_size * current_iteration:info.submat_size * current_iteration + L_column_element.shape[0], 0 : L_column_element.shape[1]]
+        T = np.linalg.inv(L_column_element_current)
        
         '''
         T = np.zeros((info.submat_size, info.submat_size))
